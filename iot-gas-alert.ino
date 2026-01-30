@@ -1,9 +1,8 @@
 /*************************************************************
-  Project: IoT Smart Gas Detector (Fan Delay 10s)
+  Project: IoT Gas Detector (Mirror LCD to Blynk)
   Board: ESP8266 (NodeMCU)
  *************************************************************/
 
-/* ข้อมูลจาก Blynk Template ของคุณ */
 #define BLYNK_TEMPLATE_ID "TMPL6mFlx70-i"
 #define BLYNK_TEMPLATE_NAME "Quickstart Template"
 #define BLYNK_AUTH_TOKEN "zS9rL_cpCxIJctXGMSlNHyTCH9W_t5uD"
@@ -24,81 +23,117 @@ char pass[] = "louis8053";
 #define BUZZER_PIN D6   
 #define RELAY_PIN D7    
 
+// จอจริง (Hardware LCD)
 LiquidCrystal_I2C lcd(0x27, 16, 2); 
 
-BlynkTimer timer;
-int gasThreshold = 600; 
-bool isAlerting = false; 
+// จอในแอป (Blynk Widget LCD) -> ใช้ V3
+WidgetLCD blynkLCD(V3); 
 
-// ตัวแปรสำหรับนับถอยหลังพัดลม
-int fanCooldownTimer = 0; 
+BlynkTimer timer;
+
+// ตัวแปร Global
+int modeLevel = 2;       
+int gasThreshold = 500;  
+bool manualFan = false;  
+int fanDelay = 0;        
+
+// --- ฟังก์ชันสั่ง Relay (แบบตัดขา แก้ค้าง) ---
+void turnFanON() {
+  pinMode(RELAY_PIN, OUTPUT);   
+  digitalWrite(RELAY_PIN, LOW); 
+}
+
+void turnFanOFF() {
+  digitalWrite(RELAY_PIN, HIGH); 
+  pinMode(RELAY_PIN, INPUT);     
+}
+
+// --- รับค่าต่างๆ จาก Blynk ---
+BLYNK_WRITE(V1) {
+  modeLevel = param.asInt();
+  switch (modeLevel) {
+    case 1: gasThreshold = 300; break; 
+    case 2: gasThreshold = 500; break; 
+    case 3: gasThreshold = 800; break; 
+    default: gasThreshold = 500;
+  }
+}
+
+BLYNK_WRITE(V2) {
+  manualFan = param.asInt();
+}
 
 void sendSensor()
 {
   int sensorValue = analogRead(MQ2_PIN);
-  Blynk.virtualWrite(V0, sensorValue);
+  Blynk.virtualWrite(V0, sensorValue); 
 
-  Serial.print("Gas: ");
-  Serial.print(sensorValue);
-  Serial.print(" | Fan Timer: ");
-  Serial.println(fanCooldownTimer);
-
-  // แสดงผลค่าแก๊สบรรทัดบน
+  // --- เตรียมข้อความบรรทัดที่ 1 (ค่าแก๊ส) ---
+  String line1 = "Gas:" + String(sensorValue) + " Lim:" + String(gasThreshold);
+  
+  // แสดงบนจอจริง
   lcd.setCursor(0, 0); 
-  lcd.print("Gas Val: ");
-  lcd.print(sensorValue);
-  lcd.print("    "); 
+  lcd.print(line1 + "   "); // เติมช่องว่างทับตัวเก่า
+  
+  // แสดงบนแอป (x=0, y=0)
+  blynkLCD.print(0, 0, line1); 
 
-  // --- ตรวจสอบความปลอดภัย ---
-  if (sensorValue > gasThreshold) {
-    // >>> อันตราย (เกิน 600) <<<
-    
-    // ตั้งเวลารอไว้ที่ 10 วินาทีเสมอ ตราบใดที่ค่าแก๊สยังสูง
-    fanCooldownTimer = 10; 
+  // --- Logic หลัก ---
+  String line2 = ""; // ตัวแปรเก็บข้อความบรรทัด 2
 
-    digitalWrite(LED_PIN, HIGH);     // ไฟติด
-    digitalWrite(BUZZER_PIN, LOW);   // เสียงดัง
+  // 1. เช็กปุ่ม Manual
+  if (manualFan == true) {
+    turnFanON(); 
     
-    // เปิดพัดลม
-    pinMode(RELAY_PIN, OUTPUT);      
-    digitalWrite(RELAY_PIN, LOW);    
-    
-    lcd.setCursor(0, 1);
-    lcd.print("STATUS: DANGER!");
-
-    if (!isAlerting) {
-      Blynk.logEvent("gas_alert", "Warning! Gas Leak Detected!"); 
-      isAlerting = true;
-    }
-    
-  } else {
-    // >>> ค่าลดลงมาปกติแล้ว (ต่ำกว่า 600) <<<
-    
-    // ปิดเสียงและไฟทันที (ไม่ต้องรอ)
-    digitalWrite(LED_PIN, LOW);      
-    digitalWrite(BUZZER_PIN, HIGH);  
-    isAlerting = false;
-
-    // --- เช็คเงื่อนไขพัดลม (หน่วงเวลา 10 วิ) ---
-    if (fanCooldownTimer > 0) {
-      // ถ้ายังมีเวลาเหลือ ให้เปิดพัดลมต่อ
-      pinMode(RELAY_PIN, OUTPUT);
-      digitalWrite(RELAY_PIN, LOW);
-      
-      lcd.setCursor(0, 1);
-      lcd.print("Clearing Smoke.."); // แจ้งเตือนว่ากำลังระบายควัน
-      
-      fanCooldownTimer--; // ลดเวลาลงทีละ 1 วินาที
-    } 
-    else {
-      // ถ้าหมดเวลาแล้ว (เป็น 0) ให้ปิดพัดลมจริงๆ
-      digitalWrite(RELAY_PIN, HIGH);   
-      pinMode(RELAY_PIN, INPUT); // ตัดไฟ Relay
-      
-      lcd.setCursor(0, 1);
-      lcd.print("STATUS: Safe    ");
+    if (sensorValue <= gasThreshold) {
+      digitalWrite(LED_PIN, LOW);
+      digitalWrite(BUZZER_PIN, HIGH); 
+      line2 = "Mode: Manual ON ";
+    } else {
+      digitalWrite(LED_PIN, HIGH);
+      digitalWrite(BUZZER_PIN, LOW);
+      line2 = "DANGER + MANUAL ";
     }
   }
+  // 2. ระบบ Auto
+  else if (sensorValue > gasThreshold) {
+    // >> อันตราย <<
+    fanDelay = 10; 
+    turnFanON(); 
+    digitalWrite(LED_PIN, HIGH);    
+    digitalWrite(BUZZER_PIN, LOW);  
+    
+    line2 = "STATUS: DANGER! ";
+
+    static bool alertSent = false;
+    if (!alertSent) {
+      Blynk.logEvent("gas_alert", "Gas Detected!"); 
+      alertSent = true;
+    }
+  } 
+  else {
+    // >> ปลอดภัย <<
+    digitalWrite(LED_PIN, LOW);     
+    digitalWrite(BUZZER_PIN, HIGH); 
+
+    if (fanDelay > 0) {
+      turnFanON(); 
+      line2 = "Clearing: " + String(fanDelay) + "s   ";
+      fanDelay--; 
+    } else {
+      turnFanOFF(); 
+      line2 = "STATUS: Safe    ";
+    }
+  }
+
+  // --- ส่งข้อความบรรทัดที่ 2 ขึ้นจอทั้งสอง ---
+  
+  // จอจริง
+  lcd.setCursor(0, 1);
+  lcd.print(line2);
+
+  // จอแอป (x=0, y=1)
+  blynkLCD.print(0, 1, line2);
 }
 
 void setup()
@@ -108,8 +143,7 @@ void setup()
   pinMode(LED_PIN, OUTPUT);
   pinMode(BUZZER_PIN, OUTPUT);
   
-  // Relay เริ่มต้นแบบตัดวงจร
-  pinMode(RELAY_PIN, INPUT);     
+  pinMode(RELAY_PIN, INPUT);
   digitalWrite(RELAY_PIN, HIGH); 
 
   digitalWrite(BUZZER_PIN, HIGH); 
@@ -119,9 +153,15 @@ void setup()
   lcd.begin(16, 2);   
   lcd.backlight();
   lcd.setCursor(0, 0);
-  lcd.print("System Starting");
+  lcd.print("System Loading..");
+  
+  // เคลียร์จอแอปก่อนเริ่ม
+  blynkLCD.clear(); 
 
   Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
+  Blynk.syncVirtual(V1); 
+  Blynk.syncVirtual(V2);
+
   timer.setInterval(1000L, sendSensor);
 }
 
