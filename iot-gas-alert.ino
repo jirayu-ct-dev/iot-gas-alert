@@ -76,7 +76,7 @@ void sendSensor()
   lcd.print(line1 + "   "); // เติมช่องว่างทับตัวเก่า
   
   // แสดงบนแอป (x=0, y=0)
-  blynkLCD.print(0, 0, line1); 
+  blynkLCD.print(0, 0, line1 + "     "); 
 
   // --- Logic หลัก ---
   String line2 = ""; // ตัวแปรเก็บข้อความบรรทัด 2
@@ -133,7 +133,7 @@ void sendSensor()
   lcd.print(line2);
 
   // จอแอป (x=0, y=1)
-  blynkLCD.print(0, 1, line2);
+  blynkLCD.print(0, 1, line2 + "     ");
 }
 
 void setup()
